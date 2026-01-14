@@ -1,10 +1,12 @@
 package symmetrical
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/sha256"
 	"crypto/sha512"
+	"encoding/binary"
 	"hash"
 
 	"github.com/xadaemon/libprisma/cryptography"
@@ -79,47 +81,40 @@ func (s *SecureAES) SetIV(iv []byte) {
 }
 
 func (s *SecureAES) Encrypt(data []byte) ([]byte, error) {
-	var out []byte
-	if len(data) > aes.BlockSize {
-		out = make([]byte, FindNextDiv(len(data), aes.BlockSize))
-	} else {
-		out = make([]byte, aes.BlockSize)
+	var outBuf bytes.Buffer
+	outBuf.Grow(len(data) + aes.BlockSize)
+	if len(data) < aes.BlockSize {
+		cryptography.ANSIPad(data, aes.BlockSize, uint8(len(data)), true)
 	}
-	outBlocker := cryptography.NewBlocker(aes.BlockSize, out)
 	blocker := cryptography.NewBlocker(aes.BlockSize, data)
+	encrypted := make([]byte, aes.BlockSize)
 	for {
-		_, encrypted := outBlocker.Next()
 		n, block := blocker.Next()
 		if n == 0 {
 			break
 		}
-		if n < aes.BlockSize {
-			block, _ = cryptography.Pad(block, aes.BlockSize)
-		}
 		s.enc.CryptBlocks(encrypted, block)
 		s.h.Write(block)
+		outBuf.Write(encrypted)
 	}
-	return out, nil
+	return outBuf.Bytes(), nil
 }
 
 func (s *SecureAES) Decrypt(data []byte) ([]byte, error) {
-	decrypted := make([]byte, len(data))
-	decryptedBlocker := cryptography.NewBlocker(aes.BlockSize, decrypted)
-	blocker := cryptography.NewBlocker(aes.BlockSize, data)
+	var decryptedBuffer bytes.Buffer
+	decrypted := make([]byte, aes.BlockSize)
+	cypertextBuffer := bytes.NewBuffer(data)
+	block := make([]byte, aes.BlockSize)
 	for {
-		_, decrypted := decryptedBlocker.Next()
-		n, block := blocker.Next()
+		n, _ := cypertextBuffer.Read(block)
 		if n == 0 {
 			break
 		}
 		s.dec.CryptBlocks(decrypted, block)
 		s.h.Write(decrypted)
+		decryptedBuffer.Write(decrypted)
 	}
-	decrypted, err := cryptography.Unpad(decrypted, aes.BlockSize)
-	if err != nil {
-		return nil, err
-	}
-	return decrypted, nil
+	return decryptedBuffer.Bytes(), nil
 }
 
 // GetTag returns the tag for the all the encryption that was performed up to the call to GetTag
@@ -178,15 +173,25 @@ func (s *SecureAES) Dispose() {
 	s.Reset()
 }
 
-// EncryptToBytes encrypts the data and returns the encrypted data with the IV and tag appended
-// it returns [data, IV, tag]
+// EncryptToBytes encrypts the data, and returns [C, IV, Tag] where
+//
+// C is the cyphertext, IV is the init vector. C is [len,data]
 func (s *SecureAES) EncryptToBytes(data []byte) ([]byte, error) {
-	encrypted, err := s.Encrypt(data)
+	iv := s.GetIV()
+	dataLen := uint64(len(data))
+	var toEncryptBuffer bytes.Buffer
+	toEncryptBuffer.Grow(int(dataLen) + 8)
+	binary.Write(&toEncryptBuffer, binary.LittleEndian, dataLen)
+	toEncryptBuffer.Write(data)
+	toEncryptBuffer.Bytes()
+	encrypted, err := s.Encrypt(toEncryptBuffer.Bytes())
 	if err != nil {
 		return nil, err
 	}
-	encrypted = append(encrypted, s.GetIV()...)
-	encrypted = append(encrypted, s.GetTag()...)
+	tag := s.GetTag()
+	encrypted = append(encrypted, iv...)
+	encrypted = append(encrypted, tag...)
+
 	return encrypted, nil
 }
 
@@ -210,5 +215,7 @@ func (s *SecureAES) DecryptFromBytes(data []byte) ([]byte, error) {
 		return nil, ErrTagMismatch
 	}
 
-	return decrypted, nil
+	dataLen := binary.LittleEndian.Uint64(decrypted[:8])
+
+	return decrypted[8 : 8+dataLen], nil
 }

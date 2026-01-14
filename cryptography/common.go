@@ -1,12 +1,18 @@
 package cryptography
 
 import (
-	cryptorand "crypto/rand"
+	"crypto/aes"
+	crand "crypto/rand"
 	"crypto/sha256"
-	"errors"
-	"fmt"
 	"math/rand/v2"
 )
+
+type Payload struct {
+	Size         uint64
+	Tag          []byte
+	Iv           []byte
+	TagAlgorithm [2]byte
+}
 
 type Blocker struct {
 	blockSize int
@@ -29,7 +35,15 @@ func (b *Blocker) Next() (int, []byte) {
 	first := b.last * b.blockSize
 	last := min((b.last+1)*b.blockSize, len(b.buff))
 	b.last++
-	return last - first, b.buff[first:last]
+	block := make([]byte, b.blockSize)
+	if first-last == 0 {
+		return 0, []byte{}
+	}
+	ret := copy(block, b.buff[first:last])
+	if ret < b.blockSize {
+		ANSIPad(block, uint8(b.blockSize), uint8(ret), true)
+	}
+	return aes.BlockSize, block
 }
 
 func SecureCompare(tag []byte, finish []byte) bool {
@@ -93,56 +107,45 @@ func SeededRandomData(seed []byte, n int) []byte {
 // with an error message.
 func NewRandom(l int) []byte {
 	salt := make([]byte, l)
-	n, err := cryptorand.Read(salt)
+	n, err := crand.Read(salt)
 	if n != l || err != nil {
 		panic("Error getting randomness, check your OS true randomness source!")
 	}
 	return salt
 }
 
-// Pad pads the data to the specified block size, if data is already the right size, this is a no-op
-func Pad(data []byte, blockSize int) ([]byte, error) {
-	// edge cases
-	if len(data) == 0 {
-		return nil, errors.New("empty data cannot be padded")
-	}
-	if len(data) > blockSize {
-		return nil, errors.New("block size cannot be less than the data passed")
-	}
-	// Data will always need a padding block under this scheme, this makes unpadding faster as there is little edge cases
-	neededPadding := 0
-	if len(data)%blockSize == 0 {
-		neededPadding = blockSize
-	} else {
-		neededPadding = blockSize - len(data)%blockSize
-	}
+type PaddingFunc func(data []byte, bs uint8, ds uint8, rand_pad bool) int
 
-	if neededPadding > 255 {
-		return nil, errors.New("cannot pad more than 255 bytes, reduce the block size")
+func PKCSPad(data []byte, bs uint8, ds uint8, _ bool) int {
+	if ds == bs {
+		return 0
 	}
-	padding := make([]byte, neededPadding)
-	for i := range neededPadding {
-		padding[i] = byte(neededPadding)
+	needed := uint8(bs - ds)
+	for i := 0; i < int(needed); i = i + 1 {
+		data[int(ds)+i] = needed
 	}
-	data = append(data, padding...)
-	return data, nil
+	return int(needed)
 }
 
-func Unpad(data []byte, blockSize int) ([]byte, error) {
-	if len(data) == 0 {
-		return nil, errors.New("empty data cannot be unpadded")
-	} else if len(data) < blockSize {
-		return nil, fmt.Errorf("data is shorter than block size")
-	} else if len(data)%blockSize != 0 {
-		return data, fmt.Errorf("cannot unpad data that's not a multiple of %d", blockSize)
+func ANSIPad(data []byte, bs uint8, ds uint8, pad_rand bool) int {
+	if ds == bs {
+		return 0
 	}
-	padLen := int(data[len(data)-1])
-	// look at the last half of the data
-	if padLen > blockSize {
-		return data, nil
-	} else if padLen > len(data) {
-		return nil, fmt.Errorf("padding length is greater than data length")
+	needed := bs - ds
+	if pad_rand {
+		crand.Read(data[ds:])
+	} else {
+		for i := 0; i < int(needed); i = i + 1 {
+			data[int(ds)+i] = needed
+		}
 	}
+	data[len(data)-1] = byte(needed)
+	return int(needed)
+}
 
-	return data[:len(data)-padLen], nil
+// Only one function is needed to strip the padding as in both supported
+// schemes the last byte will be the padding length
+func StripPadding(dest []byte, block []byte) {
+	pad_len := block[len(block)]
+	copy(dest, block[:pad_len])
 }

@@ -1,6 +1,7 @@
 package symmetrical_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -8,15 +9,20 @@ import (
 )
 
 func TestSecureAES(t *testing.T) {
-	randomData := []byte("This is a test string, it is not very long but it is long enough to test the encryption and decryption functions")
+	plainText := []byte("This is a test string, it is not very long but it is long enough to test the encryption and decryption functions")
 	secureAes, err := symmetrical.NewSecureAES([]byte("superSecretKey"), symmetrical.AES256)
 	if err != nil {
 		t.Errorf("Error creating SecureAES: %v", err)
 	}
 
-	encrypted, err := secureAes.EncryptToBytes(randomData)
+	encrypted, err := secureAes.EncryptToBytes(plainText)
 	if err != nil {
-		t.Errorf("Error encrypting data: %v", err)
+		t.Fatalf("Error encrypting data: %v", err)
+	}
+
+	if len(encrypted) < len(plainText) {
+		t.Errorf("Encrypted data is not at least the size of plaintext")
+		t.FailNow()
 	}
 
 	secureAes, err = symmetrical.NewSecureAES([]byte("superSecretKey"), symmetrical.AES256)
@@ -34,8 +40,10 @@ func TestSecureAES(t *testing.T) {
 		t.Errorf("Error creating SecureAES: %v", err)
 	}
 
-	if cmp.Equal(randomData, decrypted) == false {
+	if cmp.Equal(plainText, decrypted) == false {
+		fmt.Println(string(plainText), "!=", string(decrypted))
 		t.Errorf("Decrypted data does not match original data")
+		t.FailNow()
 	}
 
 	// test detect tampering
