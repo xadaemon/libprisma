@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/fxamacker/cbor/v2"
 	"github.com/google/go-cmp/cmp"
 	"github.com/xadaemon/libprisma/cryptography/symmetrical"
 )
@@ -46,9 +47,21 @@ func TestSecureAES(t *testing.T) {
 		t.FailNow()
 	}
 
-	// test detect tampering
+	// test detect tampering with capsule
 	encrypted[0] = encrypted[0] ^ 0xFF
 	_, err = secureAes.DecryptFromBytes(encrypted)
+	if err == nil {
+		t.Errorf("Tampered data was decrypted successfully")
+	}
+	encrypted[0] = encrypted[0] ^ 0xFF
+	// test detect tampering with the ciphertext
+	var cap symmetrical.AESCapsule
+	cbor.Unmarshal(encrypted, &cap)
+	for i, d := range cap.Ciphertext {
+		cap.Ciphertext[i] = d ^ 0xFF
+	}
+	tampered, _ := cbor.Marshal(cap)
+	_, err = secureAes.DecryptFromBytes(tampered)
 	if err == nil {
 		t.Errorf("Tampered data was decrypted successfully")
 	}

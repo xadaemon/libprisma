@@ -1,6 +1,4 @@
 PATH:=$(PATH):$(shell go env GOPATH)/bin
-CGO_ENABLED:=1
 
-test: *.go
+test: cryptography/*.go
 	go test -v ./...
-	

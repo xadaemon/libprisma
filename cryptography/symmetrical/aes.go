@@ -7,8 +7,10 @@ import (
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/binary"
+	"fmt"
 	"hash"
 
+	"github.com/fxamacker/cbor/v2"
 	"github.com/xadaemon/libprisma/cryptography"
 	"golang.org/x/crypto/pbkdf2"
 )
@@ -30,9 +32,16 @@ type SecureAES struct {
 	h    hash.Hash
 }
 
+// Wrapper for AES encrypted data, it is intended to be encoded to CBOR
+type AESCapsule struct {
+	Ciphertext []byte `cbor:"1,keyasint"`
+	IV         []byte `cbor:"2,keyasint"`
+	Tag        []byte `cbor:"3,keyasint"`
+}
+
 // NewSecureAES creates a new SecureAES object with the given key
-// The key will be used to seed a chacha8 CSPRNG to generate a salt for the key derivation function,
-// in this case, PBKDF2 with 4096 iterations and a key length of corresponding to aesSize
+// The key will be used to seed a chacha8 CSPRNG to generate a salt for the key derivation function.
+// In this case, PBKDF2 with 4096 iterations and a key length of corresponding to aesSize
 // the original key is not stored in the SecureAES struct only the derived bytes
 func NewSecureAES(key []byte, aesSize AESSize) (SecureCypher, error) {
 	keyDerivedSalt := cryptography.SeededRandomData(key, 64)
@@ -173,11 +182,12 @@ func (s *SecureAES) Dispose() {
 	s.Reset()
 }
 
-// EncryptToBytes encrypts the data, and returns [C, IV, Tag] where
+// EncryptToBytes encrypts the data, and returns ciphertext that is at least
+// len(data) long it is meant to be treated as an opaque blob.
 //
-// C is the cyphertext, IV is the init vector. C is [len,data]
+// For documentation and interoperability, the blob is the cbor encoding of
+// the [AESCapsule] type.
 func (s *SecureAES) EncryptToBytes(data []byte) ([]byte, error) {
-	iv := s.GetIV()
 	dataLen := uint64(len(data))
 	var toEncryptBuffer bytes.Buffer
 	toEncryptBuffer.Grow(int(dataLen) + 8)
@@ -188,25 +198,33 @@ func (s *SecureAES) EncryptToBytes(data []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	tag := s.GetTag()
-	encrypted = append(encrypted, iv...)
-	encrypted = append(encrypted, tag...)
 
-	return encrypted, nil
+	cap := AESCapsule{
+		Ciphertext: encrypted,
+		IV:         s.GetIV(),
+		Tag:        s.GetTag(),
+	}
+	r, err := cbor.Marshal(cap)
+	if err != nil {
+		panic(err)
+	}
+	return r, nil
 }
 
-// DecryptFromBytes decrypts the data and returns the decrypted data, it expects the data to be in the order [data, IV, tag]
+// DecryptFromBytes decrypts the data and returns the decrypted data, it
+// expects the data to be in a cbor encoded image of [AESCapsule].
 func (s *SecureAES) DecryptFromBytes(data []byte) ([]byte, error) {
-	iv := make([]byte, s.GetIvSize())
-	tag := make([]byte, s.GetTagSize())
-	tagIv := data[len(data)-s.TagPlusIVSize():]
-	encrypted := data[:len(data)-s.TagPlusIVSize()]
-	copy(iv, tagIv[:s.GetIvSize()])
-	copy(tag, tagIv[s.GetIvSize():])
+	var cap AESCapsule
+	err := cbor.Unmarshal(data, &cap)
+	if err != nil {
+		return []byte{}, fmt.Errorf("capsule fomrat is invalid")
+	}
+	iv := cap.IV
+	tag := cap.Tag
 	s.SetIV(iv)
 	s.Reset()
 
-	decrypted, err := s.Decrypt(encrypted)
+	decrypted, err := s.Decrypt(cap.Ciphertext)
 	if err != nil {
 		return nil, err
 	}
