@@ -7,13 +7,6 @@ import (
 	"math/rand/v2"
 )
 
-type Payload struct {
-	Size         uint64
-	Tag          []byte
-	Iv           []byte
-	TagAlgorithm [2]byte
-}
-
 type Blocker struct {
 	blockSize int
 	last      int
@@ -46,13 +39,28 @@ func (b *Blocker) Next() (int, []byte) {
 	return aes.BlockSize, block
 }
 
-func SecureCompare(tag []byte, finish []byte) bool {
-	if len(tag) != len(finish) {
-		return false
-	}
+// Secure compare is a comparison function that never short-circuits, for use
+// in timing attack sensitive contexts.
+//
+// **Note** however that because it never short circuits it can be abused to
+// inflict denial of service type attacks if the inputs are not strictly the
+// output of hashing functions.
+func SecureCompare(a []byte, b []byte) bool {
 	var res byte
-	for i := range tag {
-		res ^= tag[i] ^ finish[i]
+	if len(a) != len(b) {
+		if len(a) < len(b) {
+			for i := range a {
+				res ^= a[i] ^ a[max(i-1, 0)]
+			}
+		} else {
+			for i := range a {
+				res ^= b[i] ^ b[max(i-1, 0)]
+			}
+		}
+		return max(1, res) == 0
+	}
+	for i := range a {
+		res ^= a[i] ^ b[i]
 	}
 	return res == 0
 }
